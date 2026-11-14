@@ -95,7 +95,7 @@ export const reviewsPage = {
             ${
               canExport
                 ? `<button class="btn sm ghost" id="export-reviews">复核 CSV</button>
-                   <button class="btn sm ghost" id="export-listings">挂牌 CSV</button>
+                   <button class="btn sm ghost" id="export-listings">挂牌 CSV（含失效依据）</button>
                    <button class="btn sm ghost accent" id="export-clusters">归并簇 CSV</button>`
                 : '<span class="mono muted">只读角色不能导出</span>'
             }
@@ -129,7 +129,7 @@ export const reviewsPage = {
           ? `<section class="panel">
               <div class="panel-head"><h2>导出与口径</h2><span class="meta">CSV · UTF-8 BOM</span></div>
               <div class="panel-body" style="display:grid;gap:10px">
-                <p class="note">归并簇 CSV 含面积众数、价格中位、价差、离散度、风险分与两个算法命中的挂牌编号；挂牌明细 CSV 同时保留采集原文与归一结果，方便银行侧复核口径。</p>
+                <p class="note">归并簇 CSV（银行抵押估价用）只含当前有效挂牌算出的 golden record：面积众数、价格中位、价差、离散度、风险分与两个算法命中的挂牌编号。挂牌明细 CSV 保留完整历史，含每条挂牌是否当前有效、失效依据、失效/来源批次与证据，用于快照对账。</p>
                 <div class="kv">
                   <dt>挂牌数</dt><dd class="mono">${esc(overview.listing_total)} 条</dd>
                   <dt>归并簇</dt><dd class="mono">${esc(overview.cluster_total)} 个（多成员 ${esc(overview.multi_cluster_total)}）</dd>

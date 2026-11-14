@@ -11,12 +11,14 @@ from src.routes.overview import router as overview_router
 from src.routes.properties import router as properties_router
 from src.routes.reviews import router as reviews_router
 from src.routes.runs import router as runs_router
+from src.routes.snapshots import router as snapshots_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(overview_router)
 api_router.include_router(agencies_router)
+api_router.include_router(snapshots_router)
 api_router.include_router(listings_router)
 api_router.include_router(properties_router)
 api_router.include_router(runs_router)

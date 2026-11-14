@@ -18,6 +18,8 @@ def list_listings(
     status: str | None = None,
     risk: str | None = None,
     property_id: int | None = None,
+    current: bool | None = None,
+    invalid_reason: str | None = None,
     limit: int = Query(20),
     offset: int = Query(0),
     db: Session = Depends(get_db),
@@ -31,6 +33,8 @@ def list_listings(
         status=status,
         risk=risk,
         property_id=property_id,
+        current=current,
+        invalid_reason=invalid_reason,
         limit=page.limit,
         offset=page.offset,
     )

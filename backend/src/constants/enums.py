@@ -35,7 +35,7 @@ AGENCY_KIND_ORDER: list[str] = [
 
 
 class ListingStatus(StrEnum):
-    """挂牌状态。"""
+    """挂牌状态（中介在快照里自报的业务状态）。"""
 
     ACTIVE = "active"
     SOLD = "sold"
@@ -53,6 +53,38 @@ LISTING_STATUS_ORDER: list[str] = [
     ListingStatus.SOLD.value,
     ListingStatus.OFF.value,
 ]
+
+
+class InvalidReason(StrEnum):
+    """挂牌失效依据（对账留痕）：仅由快照对账写入，晚到的旧批次不能复活。"""
+
+    WITHDRAWN = "withdrawn"          # 新整批快照中该编号不再出现：门店撤回
+    OFF_MARKET = "off_market"        # 新快照把该编号标为已下架
+    SOLD = "sold"                    # 新快照把该编号标为已成交未下架
+    STALE_BATCH = "stale_batch"      # 该记录只出现在晚到的旧批次里，未被当前批次确认
+
+
+INVALID_REASON_LABELS: dict[str, str] = {
+    InvalidReason.WITHDRAWN.value: "门店撤回（新批次未出现）",
+    InvalidReason.OFF_MARKET.value: "中介标记已下架",
+    InvalidReason.SOLD.value: "中介标记已成交",
+    InvalidReason.STALE_BATCH.value: "晚到旧批次（未被当前批次确认）",
+}
+
+
+class SnapshotBatchStatus(StrEnum):
+    """快照批次处理状态。"""
+
+    APPLIED = "applied"   # 已参与对账并驱动挂牌生命周期
+    STALE = "stale"       # 晚到的旧批次：仅归档留痕，不改当前有效挂牌
+    DUPLICATE = "duplicate"  # 同一批重试：幂等返回，不新增任何记录
+
+
+SNAPSHOT_BATCH_STATUS_LABELS: dict[str, str] = {
+    SnapshotBatchStatus.APPLIED.value: "已对账",
+    SnapshotBatchStatus.STALE.value: "晚到旧批（仅归档）",
+    SnapshotBatchStatus.DUPLICATE.value: "重试批次（幂等忽略）",
+}
 
 
 class RunStatus(StrEnum):

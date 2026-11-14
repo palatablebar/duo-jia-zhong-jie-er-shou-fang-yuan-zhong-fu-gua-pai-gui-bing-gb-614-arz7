@@ -4,9 +4,25 @@
 > 现状：爬虫把 9 家挂牌原样入库，同一套房出现 3-5 次，估价师手动挑一条；
 > 面积/楼层/朝向写法不一（`89.5㎡` / `89.5平米` / `建面89.5`），已成交未下架的僵尸挂牌还在拉低均价。
 
-本系统把「采集 → 字段解析归一 → blocking → 相似度 → 并查集 → golden record → 风险分诊 → 复核 → 导出」串成一条可追溯链路：
+本系统把「采集 → 快照接入对账 → 字段解析归一 → blocking → 相似度 → 并查集 → golden record → 风险分诊 → 复核 → 导出」串成一条可追溯链路：
 同一套房只留一份主档（价格中位 / 面积众数 / 中介去重计数），
 价格离群（钓鱼价）与超期无带看（僵尸挂牌）单独进复核队列，导出清单带全部算法读数。
+
+## 1.1 整批快照接入与挂牌生命周期
+
+中介每天补发的是**整批快照**：同一门店撤回旧编号后会换新编号重挂。接入层（`snapshot_service`）保证：
+
+- **完整历史**：`snapshot_batches`（批次）+ `listing_snapshots`（批次内原文）只追加，保留每一批原始报文；
+- **幂等接入**：批次自然键 `(agency_id, batch_key)` 去重，**重试同一批不新增任何记录**，直接返回首次结果；
+- **旧批不复活**：晚到的旧批次（`snapshot_date` 早于该渠道已对账的最新批次）只归档为 `stale`，
+  不修改任何当前有效挂牌——已撤回的挂牌不会被晚到旧记录恢复；
+- **只让当前有效挂牌进入归并**：对账后撤回 / 中介标记下架 / 成交的挂牌置 `listings.is_current=FALSE`，
+  记录保留并写失效依据（`invalid_reason` + `invalid_batch_id` + `invalid_evidence` + `invalidated_at`）；
+- **撤回换新编号重挂**：旧编号留 `withdrawn` 失效依据，新编号作为新 Listing 成为当前有效；
+  重跑归并后房源簇成员、中介数与银行导出随快照同步变化。
+
+失效依据枚举：`withdrawn`（新批次未出现，门店撤回）/ `off_market`（中介标下架）/ `sold`（中介标成交）/ `stale_batch`（晚到旧批未确认）。
+接入 API：`POST /api/snapshots/batches`（admin / analyst），批次查询 `GET /api/snapshots/batches`。
 
 ## 1. 运行
 
@@ -35,8 +51,10 @@ docker compose down -v --remove-orphans
 | 实体 | 表 | 作用 | 自然键 |
 | --- | --- | --- | --- |
 | Agency 中介渠道 | `agencies` | 9 家挂牌来源、采集入口与口径 | `code` |
-| Listing 原始挂牌 | `listings` | 采集原文 + 归一结果 + 所属簇 | `(agency_id, lid)` |
-| Property 房源簇 | `properties` | golden record：面积众数/价格中位/中介数/风险分 | `cluster_key`（成员挂牌哈希） |
+| SnapshotBatch 快照批次 | `snapshot_batches` | 整批快照的批次台账（applied/stale/duplicate） | `(agency_id, batch_key)` |
+| ListingSnapshot 批次快照 | `listing_snapshots` | 每批挂牌原文，只追加不覆盖（完整历史） | `(batch_id, lid)` |
+| Listing 原始挂牌 | `listings` | 采集原文 + 归一结果 + 所属簇 + 生命周期（`is_current`/失效依据） | `(agency_id, lid)` |
+| Property 房源簇 | `properties` | golden record：面积众数/价格中位/中介数/风险分（仅当前有效挂牌入簇） | `cluster_key`（成员挂牌哈希） |
 | MatchRun 归并重算 | `match_runs` | 每次算法 A+B 的输入输出与耗时 | `run_no` / `seed_key` |
 | Review 复核单 | `reviews` | 风险簇的人工结论（待复核/确认/驳回） | `seed_key` |
 
@@ -46,6 +64,7 @@ docker compose down -v --remove-orphans
 
 | 模块 | 页面 | services + controller | 主要 API |
 | --- | --- | --- | --- |
+| ⓪ 快照接入对账 | `#/agencies` 批次台账、`#/listings` 生命周期 | `snapshot_service` + `controllers/snapshot_controller.py` | `POST /api/snapshots/batches`、`GET /api/snapshots/batches` |
 | ① 中介与采集 | `#/agencies` 中介与采集 | `agency_service` + `controllers/agency_controller.py` | `GET/POST /api/agencies`、`GET/PATCH /api/agencies/{id}` |
 | ② 字段解析归一 | `#/listings` 挂牌明细（原文 vs 归一） | `normalizer` + `listing_service` + `listing_controller.py` | `GET /api/listings`、`GET /api/listings/{id}` |
 | ③ 分块与相似度 | `#/clusters` 归并簇（成员对照） | `entity_resolution`（blocking / similarity / UnionFind） | 由 `POST /api/runs` 驱动，读数见 `GET /api/runs/{id}` |
@@ -81,6 +100,8 @@ docker compose down -v --remove-orphans
 | 风险等级 `high/medium/low/none` | `constants/enums.py::RiskLevel` + `RISK_LEVEL_LABELS` | `js/config.js::ENUMS.riskLevel`、`riskTone()` |
 | 风险标签 `bait/stale/spread` | `constants/enums.py::RiskTag` + `RISK_TAG_LABELS` | `js/config.js::ENUMS.riskTag`、`tagTone()` |
 | 挂牌状态 `active/sold/off_market` | `constants/enums.py::ListingStatus` | `js/config.js::ENUMS.listingStatus`、`statusTone()` |
+| 挂牌失效依据 `withdrawn/off_market/sold/stale_batch` | `constants/enums.py::InvalidReason` + `INVALID_REASON_LABELS` | `js/config.js::ENUMS.invalidReason` |
+| 快照批次状态 `applied/stale/duplicate` | `constants/enums.py::SnapshotBatchStatus` + `SNAPSHOT_BATCH_STATUS_LABELS` | `js/config.js::ENUMS.snapshotBatchStatus` |
 | 渠道类型 `broker/platform/feed` | `constants/enums.py::AgencyKind` | `js/config.js::ENUMS.agencyKind` |
 | 复核状态/原因、运行状态、触发方式 | `enums.py::ReviewStatus/ReviewReason/RunStatus/TriggerKind` | `js/config.js::ENUMS.reviewStatus/reviewReason/runStatus/trigger` |
 | 角色与权限点 | `constants/roles.py::PERMISSIONS` | `js/config.js::PERMISSIONS` + `can()` |

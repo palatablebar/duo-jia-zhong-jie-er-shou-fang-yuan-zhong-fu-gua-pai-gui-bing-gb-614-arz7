@@ -4,15 +4,22 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from src.constants.enums import LISTING_STATUS_LABELS, RISK_TAG_LABELS
+from src.constants.enums import (
+    INVALID_REASON_LABELS,
+    LISTING_STATUS_LABELS,
+    RISK_TAG_LABELS,
+)
 from src.models.agency import Agency
 from src.models.listing import Listing
 from src.models.property import Property
+from src.models.snapshot import SnapshotBatch
 from src.utils.errors import not_found
 from src.utils.timeutil import iso_utc
 
 
-def serialize(listing: Listing, agency: Agency | None = None, prop: Property | None = None) -> dict:
+def serialize(listing: Listing, agency: Agency | None = None, prop: Property | None = None,
+              batch_labels: dict[int, str] | None = None) -> dict:
+    batch_labels = batch_labels or {}
     return {
         "id": listing.id,
         "lid": listing.lid,
@@ -31,6 +38,15 @@ def serialize(listing: Listing, agency: Agency | None = None, prop: Property | N
         "listed_days": listing.listed_days,
         "views": listing.views,
         "captured_at": iso_utc(listing.captured_at),
+        # ---- 快照生命周期 ----
+        "is_current": listing.is_current,
+        "invalid_reason": listing.invalid_reason,
+        "invalid_reason_label": INVALID_REASON_LABELS.get(listing.invalid_reason, listing.invalid_reason or ""),
+        "invalid_evidence": listing.invalid_evidence or {},
+        "invalidated_at": iso_utc(listing.invalidated_at),
+        "first_seen_batch": batch_labels.get(listing.first_seen_batch_id),
+        "last_seen_batch": batch_labels.get(listing.last_seen_batch_id),
+        "invalid_batch": batch_labels.get(listing.invalid_batch_id),
         "norm": {
             "community": listing.community_norm,
             "layout": listing.layout_norm,
@@ -52,10 +68,11 @@ def serialize(listing: Listing, agency: Agency | None = None, prop: Property | N
     }
 
 
-def _context(db: Session) -> tuple[dict[int, Agency], dict[int, Property]]:
+def _context(db: Session) -> tuple[dict[int, Agency], dict[int, Property], dict[int, str]]:
     agencies = {agency.id: agency for agency in db.scalars(select(Agency)).all()}
     props = {prop.id: prop for prop in db.scalars(select(Property)).all()}
-    return agencies, props
+    batch_labels = {batch.id: batch.batch_key for batch in db.scalars(select(SnapshotBatch)).all()}
+    return agencies, props, batch_labels
 
 
 def list_listings(
@@ -66,6 +83,8 @@ def list_listings(
     status: str | None = None,
     risk: str | None = None,
     property_id: int | None = None,
+    current: bool | None = None,
+    invalid_reason: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
@@ -82,6 +101,12 @@ def list_listings(
     if status:
         stmt = stmt.where(Listing.status == status)
         count_stmt = count_stmt.where(Listing.status == status)
+    if current is not None:
+        stmt = stmt.where(Listing.is_current.is_(current))
+        count_stmt = count_stmt.where(Listing.is_current.is_(current))
+    if invalid_reason:
+        stmt = stmt.where(Listing.invalid_reason == invalid_reason)
+        count_stmt = count_stmt.where(Listing.invalid_reason == invalid_reason)
     if risk == "bait":
         stmt = stmt.where(Listing.risk_tags.like('%"bait"%'))
         count_stmt = count_stmt.where(Listing.risk_tags.like('%"bait"%'))
@@ -96,9 +121,12 @@ def list_listings(
         count_stmt = count_stmt.where(Listing.property_id == property_id)
     total = db.scalar(count_stmt) or 0
     rows = db.scalars(stmt.order_by(Listing.id).limit(limit).offset(offset)).all()
-    agencies, props = _context(db)
+    agencies, props, batch_labels = _context(db)
     return {
-        "items": [serialize(row, agencies.get(row.agency_id), props.get(row.property_id)) for row in rows],
+        "items": [
+            serialize(row, agencies.get(row.agency_id), props.get(row.property_id), batch_labels)
+            for row in rows
+        ],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -109,8 +137,8 @@ def get_listing(db: Session, listing_id: int) -> dict:
     listing = db.get(Listing, listing_id)
     if listing is None:
         raise not_found("listing", listing_id)
-    agencies, props = _context(db)
-    payload = serialize(listing, agencies.get(listing.agency_id), props.get(listing.property_id))
+    agencies, props, batch_labels = _context(db)
+    payload = serialize(listing, agencies.get(listing.agency_id), props.get(listing.property_id), batch_labels)
     prop = props.get(listing.property_id)
     payload["cluster"] = (
         {

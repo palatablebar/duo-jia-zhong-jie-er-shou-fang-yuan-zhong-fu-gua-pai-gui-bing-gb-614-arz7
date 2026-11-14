@@ -1,8 +1,8 @@
 import { api } from '../api.js';
-import { ENUMS, riskTone, statusTone, tagTone, wan } from '../config.js';
+import { ENUMS, lifecycleTone, riskTone, statusTone, tagTone, wan } from '../config.js';
 import { drawer, errorBox, errorMessage, esc, field, fmtTime, kv, table } from '../ui.js';
 
-const state = { q: '', agencyId: '', status: '', risk: '', propertyId: '' };
+const state = { q: '', agencyId: '', status: '', risk: '', propertyId: '', lifecycle: '' };
 
 function pairCell(raw, norm) {
   return `<div class="pair"><span class="raw">${esc(raw)}</span><span class="arrow">→</span><span class="norm">${esc(norm)}</span></div>`;
@@ -10,6 +10,12 @@ function pairCell(raw, norm) {
 
 function openListing(view, ctx, item) {
   const flags = item.parse_flags || [];
+  const lifecycleCell = item.is_current
+    ? '<span class="badge ok">当前有效 · 参与归并</span>'
+    : `<span class="badge danger">已失效 · 不参与归并</span>
+       <div class="mono muted" style="margin-top:4px">依据：${esc(item.invalid_reason_label || item.invalid_reason || '—')}</div>
+       <div class="mono muted">失效批次：${esc(item.invalid_batch || '—')} · ${esc(fmtTime(item.invalidated_at) || '—')}</div>
+       <div class="mono muted">证据：${esc(JSON.stringify(item.invalid_evidence || {}))}</div>`;
   const { root } = drawer({
     title: `${item.community_raw.trim()} · ${item.layout_raw}`,
     subtitle: `${item.lid} · ${item.agency_name} · ${fmtTime(item.captured_at)}`,
@@ -21,6 +27,8 @@ function openListing(view, ctx, item) {
       ['楼层', `${pairCell(item.floor_raw, item.norm.floor ? `${item.norm.floor}/${item.norm.floor_total || '?'} · ${item.norm.floor_band}` : '（仅区间 / 缺失）')}`],
       ['朝向', `${pairCell(item.orientation_raw, item.norm.orientation || '—')}`],
       ['挂牌状态', `<span class="badge ${statusTone(item.status)}">${esc(item.status_label)}</span>`],
+      ['生命周期', lifecycleCell],
+      ['批次溯源', `<span class="mono muted">首次 ${esc(item.first_seen_batch || '—')} · 最近 ${esc(item.last_seen_batch || '—')}</span>`],
       ['挂牌天数 / 带看', `<span class="mono">${esc(item.listed_days)} 天 · ${esc(item.views)} 次</span>`],
       ['所属簇', item.property_id ? `<span class="mono">#${esc(item.property_id)} ${esc(item.property_community || '')} ${esc(item.property_layout || '')}</span>` : '未入簇'],
       ['风险标签', (item.risk_tags || []).length ? item.risk_tags.map((tag) => `<span class="badge ${tagTone(tag)}">${esc(ENUMS.riskTag[tag] || tag)}</span>`).join(' ') : '—'],
@@ -59,6 +67,7 @@ export const listingsPage = {
           status: state.status,
           risk: state.risk,
           property_id: state.propertyId,
+          current: state.lifecycle === 'current' ? true : state.lifecycle === 'invalid' ? false : undefined,
           limit: 50,
         }),
         api.get('/api/agencies', { limit: 50 }),
@@ -85,6 +94,7 @@ export const listingsPage = {
           <div class="filter-bar" id="listing-filters">
             ${field({ label: '搜索', name: 'q', value: state.q, placeholder: '小区 / 编号 / 标题' })}
             ${field({ label: '中介', name: 'agency_id', value: state.agencyId, options: [{ value: '', label: '全部' }, ...agencies.items.map((item) => ({ value: item.id, label: item.name }))] })}
+            ${field({ label: '生命周期', name: 'lifecycle', value: state.lifecycle, options: [{ value: '', label: '全部' }, { value: 'current', label: '当前有效（参与归并）' }, { value: 'invalid', label: '已失效（撤回/下架/成交）' }] })}
             ${field({ label: '挂牌状态', name: 'status', value: state.status, options: [{ value: '', label: '全部' }, ...Object.entries(ENUMS.listingStatus).map(([value, label]) => ({ value, label }))] })}
             ${field({ label: '风险', name: 'risk', value: state.risk, options: [{ value: '', label: '全部' }, { value: 'bait', label: '钓鱼价' }, { value: 'stale', label: '僵尸挂牌' }, { value: 'none', label: '无标签' }] })}
           </div>
@@ -99,6 +109,13 @@ export const listingsPage = {
             { key: 'price', label: '价格', render: (row) => pairCell(row.price_raw, row.norm.price ? wan(row.norm.price) : '—') },
             { key: 'floor', label: '楼层', render: (row) => pairCell(row.floor_raw, row.norm.floor ? `${row.norm.floor}/${row.norm.floor_total || '?'} 层` : '仅区间') },
             { key: 'status', label: '状态', render: (row) => `<span class="badge ${statusTone(row.status)}">${esc(row.status_label)}</span>` },
+            {
+              key: 'is_current',
+              label: '生命周期',
+              render: (row) => row.is_current
+                ? '<span class="badge ok">当前有效</span>'
+                : `<span class="badge danger">已失效</span><div class="mono muted">${esc(row.invalid_reason_label || row.invalid_reason || '')}</div>`,
+            },
             {
               key: 'risk_tags',
               label: '风险',
@@ -116,6 +133,7 @@ export const listingsPage = {
     filters?.addEventListener('change', () => {
       state.q = filters.querySelector('[name=q]').value.trim();
       state.agencyId = filters.querySelector('[name=agency_id]').value;
+      state.lifecycle = filters.querySelector('[name=lifecycle]').value;
       state.status = filters.querySelector('[name=status]').value;
       state.risk = filters.querySelector('[name=risk]').value;
       state.propertyId = '';

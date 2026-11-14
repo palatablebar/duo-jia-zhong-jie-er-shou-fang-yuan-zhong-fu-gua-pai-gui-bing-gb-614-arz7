@@ -1,10 +1,19 @@
-"""导出服务：归并簇 / 挂牌明细 / 复核单 CSV（含两个算法的结果列）。"""
+"""导出服务：归并簇 / 挂牌明细 / 复核单 / 对账 CSV（含两个算法的结果列）。
+
+口径区分：
+- 归并簇 CSV（银行抵押估价用）：只由当前有效挂牌算出，撤回 / 下架不进簇；
+- 挂牌明细 CSV：保留完整历史，当前有效与失效挂牌都在，并带每条挂牌的失效依据，
+  满足「对账结果保留每条挂牌的失效依据」。
+"""
 from __future__ import annotations
+
+import json
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.constants.enums import (
+    INVALID_REASON_LABELS,
     LISTING_STATUS_LABELS,
     REVIEW_REASON_LABELS,
     REVIEW_STATUS_LABELS,
@@ -15,6 +24,7 @@ from src.models.agency import Agency
 from src.models.listing import Listing
 from src.models.property import Property
 from src.models.review import Review
+from src.models.snapshot import SnapshotBatch
 from src.utils.csv_export import to_csv
 from src.utils.timeutil import local_stamp
 
@@ -70,12 +80,14 @@ def clusters_csv(db: Session) -> bytes:
 
 
 def listings_csv(db: Session, agency_id: int | None = None) -> bytes:
+    """挂牌明细对账 CSV：完整历史（含失效挂牌），每条带失效依据与来源批次。"""
     stmt = select(Listing)
     if agency_id:
         stmt = stmt.where(Listing.agency_id == agency_id)
-    listings = db.scalars(stmt.order_by(Listing.id)).all()
+    listings = db.scalars(stmt.order_by(Listing.agency_id, Listing.id)).all()
     agencies = {agency.id: agency for agency in db.scalars(select(Agency)).all()}
     props = {prop.id: prop for prop in db.scalars(select(Property)).all()}
+    batches = {batch.id: batch.batch_key for batch in db.scalars(select(SnapshotBatch)).all()}
     headers = [
         "挂牌编号",
         "中介",
@@ -89,7 +101,14 @@ def listings_csv(db: Session, agency_id: int | None = None) -> bytes:
         "楼层",
         "朝向(归一)",
         "户型(归一)",
-        "状态",
+        "业务状态",
+        "是否当前有效",
+        "失效依据",
+        "失效批次",
+        "失效证据",
+        "失效时间",
+        "首次出现批次",
+        "最近出现批次",
         "挂牌天数",
         "带看次数",
         "所属簇",
@@ -115,6 +134,14 @@ def listings_csv(db: Session, agency_id: int | None = None) -> bytes:
                 listing.orientation_norm,
                 listing.layout_norm,
                 LISTING_STATUS_LABELS.get(listing.status, listing.status),
+                "当前有效" if listing.is_current else "已失效",
+                INVALID_REASON_LABELS.get(listing.invalid_reason, listing.invalid_reason or "")
+                if not listing.is_current else "",
+                batches.get(listing.invalid_batch_id, "") if listing.invalid_batch_id else "",
+                json.dumps(listing.invalid_evidence, ensure_ascii=False) if listing.invalid_evidence else "",
+                local_stamp(listing.invalidated_at) if listing.invalidated_at else "",
+                batches.get(listing.first_seen_batch_id, "") if listing.first_seen_batch_id else "",
+                batches.get(listing.last_seen_batch_id, "") if listing.last_seen_batch_id else "",
                 listing.listed_days,
                 listing.views,
                 prop.id if prop else "",

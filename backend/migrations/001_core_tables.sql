@@ -25,6 +25,48 @@ CREATE TABLE agencies (
     updated_at      DATETIME     NOT NULL
 );
 
+-- 整批快照接入：保留完整历史，自然键 (agency_id, batch_key) 保证重试幂等
+CREATE TABLE snapshot_batches (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    agency_id       INT          NOT NULL,
+    batch_key       VARCHAR(120) NOT NULL,           -- 采集侧批次唯一标识
+    snapshot_date   DATE         NOT NULL,           -- 批次归属快照日（判定晚到旧批）
+    status          VARCHAR(20)  NOT NULL DEFAULT 'applied', -- applied / stale / duplicate
+    row_count       INT          NOT NULL DEFAULT 0,
+    summary         JSON,
+    note            TEXT,
+    received_at     DATETIME     NOT NULL,
+    applied_at      DATETIME,
+    created_at      DATETIME     NOT NULL,
+    updated_at      DATETIME     NOT NULL,
+    CONSTRAINT uq_snapshot_batches_agency_batch UNIQUE (agency_id, batch_key),
+    CONSTRAINT fk_snapshot_batches_agency FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE
+);
+
+-- 批次内每条挂牌原文：只追加不覆盖，是对账与失效依据的留痕来源
+CREATE TABLE listing_snapshots (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    batch_id         INT          NOT NULL,
+    agency_id        INT          NOT NULL,
+    lid              VARCHAR(40)  NOT NULL,
+    community_raw    VARCHAR(160) NOT NULL,
+    layout_raw       VARCHAR(60)  NOT NULL,
+    area_raw         VARCHAR(60)  NOT NULL,
+    price_raw        VARCHAR(60)  NOT NULL,
+    floor_raw        VARCHAR(60)  NOT NULL,
+    orientation_raw  VARCHAR(40)  NOT NULL,
+    title            VARCHAR(200),
+    status           VARCHAR(20)  NOT NULL DEFAULT 'active',
+    listed_days      INT          NOT NULL DEFAULT 0,
+    views            INT          NOT NULL DEFAULT 0,
+    captured_at      DATETIME     NOT NULL,
+    raw_payload      JSON,
+    created_at       DATETIME     NOT NULL,
+    CONSTRAINT uq_listing_snapshots_batch_lid UNIQUE (batch_id, lid),
+    CONSTRAINT fk_listing_snapshots_batch FOREIGN KEY (batch_id) REFERENCES snapshot_batches(id) ON DELETE CASCADE,
+    CONSTRAINT fk_listing_snapshots_agency FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE
+);
+
 CREATE TABLE match_runs (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     run_no          VARCHAR(40)  NOT NULL UNIQUE,
@@ -71,10 +113,21 @@ CREATE TABLE listings (
     parse_flags      JSON,
     property_id      INT,
     risk_tags        JSON,
+    -- 快照生命周期：只有 is_current=TRUE 的当前有效挂牌进入归并
+    is_current       BOOLEAN      NOT NULL DEFAULT TRUE,
+    first_seen_batch_id INT,
+    last_seen_batch_id  INT,
+    invalid_batch_id    INT,
+    invalid_reason   VARCHAR(20),                  -- withdrawn / off_market / sold / stale_batch
+    invalid_evidence JSON,
+    invalidated_at   DATETIME,
     created_at       DATETIME     NOT NULL,
     updated_at       DATETIME     NOT NULL,
     CONSTRAINT uq_listings_agency_lid UNIQUE (agency_id, lid),
-    CONSTRAINT fk_listings_agency FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE
+    CONSTRAINT fk_listings_agency FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE,
+    CONSTRAINT fk_listings_first_batch FOREIGN KEY (first_seen_batch_id) REFERENCES snapshot_batches(id) ON DELETE SET NULL,
+    CONSTRAINT fk_listings_last_batch FOREIGN KEY (last_seen_batch_id) REFERENCES snapshot_batches(id) ON DELETE SET NULL,
+    CONSTRAINT fk_listings_invalid_batch FOREIGN KEY (invalid_batch_id) REFERENCES snapshot_batches(id) ON DELETE SET NULL
 );
 
 CREATE TABLE properties (

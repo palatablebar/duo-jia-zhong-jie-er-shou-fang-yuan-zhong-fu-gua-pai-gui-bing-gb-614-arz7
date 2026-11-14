@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import timedelta
 from statistics import median
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from src.config.settings import settings
@@ -48,6 +48,10 @@ def _unit_price_median(properties: list[Property]) -> int:
 
 def overview(db: Session) -> dict:
     listing_total = db.scalar(select(func.count()).select_from(Listing)) or 0
+    listing_current = (
+        db.scalar(select(func.count()).select_from(Listing).where(Listing.is_current.is_(True))) or 0
+    )
+    listing_invalid = listing_total - listing_current
     cluster_total = db.scalar(select(func.count()).select_from(Property)) or 0
     multi_total = db.scalar(select(func.count()).select_from(Property).where(Property.member_count > 1)) or 0
     risk_total = (
@@ -72,6 +76,7 @@ def overview(db: Session) -> dict:
     agency_rows = db.execute(
         select(Agency.code, Agency.name, Agency.kind, func.count(Listing.id))
         .join(Listing, Listing.agency_id == Agency.id, isouter=True)
+        .where(or_(Listing.is_current.is_(True), Listing.id.is_(None)))
         .group_by(Agency.code, Agency.name, Agency.kind, Agency.id)
         .order_by(Agency.id)
     ).all()
@@ -93,9 +98,11 @@ def overview(db: Session) -> dict:
 
     return {
         "listing_total": listing_total,
+        "listing_current": listing_current,
+        "listing_invalid": listing_invalid,
         "cluster_total": cluster_total,
         "multi_cluster_total": multi_total,
-        "dedup_rate": round(1 - cluster_total / listing_total, 4) if listing_total else 0.0,
+        "dedup_rate": round(1 - cluster_total / listing_current, 4) if listing_current else 0.0,
         "risk_total": risk_total,
         "pending_total": pending_total,
         "agency_total": agency_total,

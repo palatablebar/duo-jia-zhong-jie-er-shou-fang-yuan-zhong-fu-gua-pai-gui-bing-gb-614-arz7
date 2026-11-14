@@ -48,12 +48,23 @@ def _apply_normalized(listing: Listing, norm: dict) -> None:
 
 def run_pipeline(db, run: MatchRun, threshold: float = SIMILARITY_THRESHOLD) -> dict:
     started = time.perf_counter()
-    listings = list(db.scalars(select(Listing).order_by(Listing.id)).all())
+    # 只让当前有效挂牌进入归并；已撤回 / 下架 / 成交的历史挂牌保留留痕但不参与，
+    # 避免同一套房被重复计数，也避免晚到旧快照把已撤回挂牌「恢复」。
+    all_listings = list(db.scalars(select(Listing).order_by(Listing.id)).all())
+    listings = [listing for listing in all_listings if listing.is_current]
+    inactive_count = len(all_listings) - len(listings)
     agencies = {agency.id: agency for agency in db.scalars(select(Agency)).all()}
     if not listings:
         return {
-            "metrics": {"listings": 0, "clusters": 0, "multi_clusters": 0, "pairs_scored": 0, "pairs_linked": 0},
-            "log": "没有可归并的挂牌：请先采集入库。",
+            "metrics": {
+                "listings": 0,
+                "clusters": 0,
+                "multi_clusters": 0,
+                "pairs_scored": 0,
+                "pairs_linked": 0,
+                "inactive_listings": inactive_count,
+            },
+            "log": "没有可归并的当前有效挂牌：请先采集入库（失效挂牌仅留痕，不参与归并）。",
             "status": "partial",
         }
 
@@ -64,6 +75,12 @@ def run_pipeline(db, run: MatchRun, threshold: float = SIMILARITY_THRESHOLD) -> 
 
     agency_ids = [listing.agency_id for listing in listings]
     result = entity_resolution.resolve(normalized, agency_ids, threshold=threshold)
+
+    # 全量重算：先清空当前有效挂牌的旧簇归属，再按本次结果重新指派，
+    # 避免撤回/重挂后被淘汰旧簇的成员残留空 property_id（簇成员与房源簇口径保持一致）。
+    for listing in listings:
+        listing.property_id = None
+        listing.risk_tags = []
 
     existing = {prop.cluster_key: prop for prop in db.scalars(select(Property)).all()}
     seen_keys: set[str] = set()
@@ -146,11 +163,12 @@ def run_pipeline(db, run: MatchRun, threshold: float = SIMILARITY_THRESHOLD) -> 
             "risk_medium": risk_medium,
             "risk_total": risk_high + risk_medium,
             "pruned_clusters": pruned,
+            "inactive_listings": inactive_count,
             "duration_ms": int((time.perf_counter() - started) * 1000),
         }
     )
     log_lines = [
-        f"输入挂牌 {metrics['listings']} 条，面积归一失败 {sum(1 for n in normalized if n['area_num'] is None)} 条",
+        f"当前有效挂牌 {metrics['listings']} 条（失效留痕 {inactive_count} 条，不参与归并），面积归一失败 {sum(1 for n in normalized if n['area_num'] is None)} 条",
         f"blocking 候选对 {metrics['pairs_scored']} 组，阈值 {threshold:.2f} 连边 {metrics['pairs_linked']} 条",
         f"并查集 + 传递闭包得到 {metrics['clusters']} 个簇，其中多成员簇 {metrics['multi_clusters']} 个，去重率 {metrics['dedup_rate']:.2%}",
         f"算法 B：钓鱼价 {baits} 条、僵尸挂牌 {stales} 条，高风险簇 {risk_high} 个、中风险簇 {risk_medium} 个",
@@ -160,7 +178,11 @@ def run_pipeline(db, run: MatchRun, threshold: float = SIMILARITY_THRESHOLD) -> 
 
 
 def _prune_orphans(db, seen_keys: set[str]) -> int:
-    """删掉本次重算不再产生、且没有复核单的旧簇（有复核单的保留，避免丢历史结论）。"""
+    """删掉本次重算不再产生、且没有复核单的旧簇（有复核单的保留，避免丢历史结论）。
+
+    失效挂牌在对账阶段已先出簇（property_id=None）；这里兜底把指向被删簇的
+    挂牌全部解绑，保证重挂/撤回后簇成员与房源簇口径一致。
+    """
     removed = 0
     for prop in db.scalars(select(Property)).all():
         if prop.cluster_key in seen_keys:

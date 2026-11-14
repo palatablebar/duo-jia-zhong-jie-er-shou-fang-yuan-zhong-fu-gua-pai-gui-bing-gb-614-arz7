@@ -19,7 +19,9 @@ function openAgency(view, ctx, agency) {
       ['备注', esc(agency.note || '—')],
     ])}
     <h3 style="margin:14px 0 8px;font-size:0.95rem">该渠道的挂牌样例</h3>
-    <div id="agency-samples" class="members"><div class="empty"><div class="mark">读取中…</div></div></div>`,
+    <div id="agency-samples" class="members"><div class="empty"><div class="mark">读取中…</div></div></div>
+    <h3 style="margin:14px 0 8px;font-size:0.95rem">快照批次（完整历史 · 幂等接入）</h3>
+    <div id="agency-batches" class="members"><div class="empty"><div class="mark">读取中…</div></div></div>`,
     footer: editable
       ? `<button class="btn ghost" data-toggle>${agency.enabled ? '暂停采集' : '恢复采集'}</button>`
       : '<span class="mono muted">只读角色只能查看渠道信息</span>',
@@ -45,6 +47,35 @@ function openAgency(view, ctx, agency) {
     .catch(() => {
       const node = root.querySelector('#agency-samples');
       if (node) node.innerHTML = '<div class="empty"><div class="mark">样例读取失败</div></div>';
+    });
+  api
+    .get('/api/snapshots/batches', { agency_id: agency.id, limit: 10 })
+    .then((data) => {
+      const node = root.querySelector('#agency-batches');
+      if (!node) return;
+      node.innerHTML = table({
+        rows: data.items,
+        columns: [
+          { key: 'batch_key', label: '批次', className: 'mono', render: (row) => esc(row.batch_key) },
+          { key: 'snapshot_date', label: '快照日', className: 'mono' },
+          { key: 'status_label', label: '处理状态', render: (row) => esc(row.status_label) },
+          {
+            key: 'summary',
+            label: '对账（新建/撤回/失效/忽略）',
+            className: 'mono',
+            render: (row) => {
+              const s = row.summary || {};
+              return esc(`${s.created ?? 0} / ${s.withdrawn ?? 0} / ${s.deactivated ?? 0} / ${s.stale_ignored ?? 0}`);
+            },
+          },
+        ],
+        empty: { title: '还没有快照批次', hint: '中介补发整批快照后会在此留痕，重试同批不新增。' },
+      });
+      node.querySelectorAll('table.data').forEach((el) => el.classList.add('compact'));
+    })
+    .catch(() => {
+      const node = root.querySelector('#agency-batches');
+      if (node) node.innerHTML = '<div class="empty"><div class="mark">批次读取失败</div></div>';
     });
   root.querySelector('[data-toggle]')?.addEventListener('click', async () => {
     try {

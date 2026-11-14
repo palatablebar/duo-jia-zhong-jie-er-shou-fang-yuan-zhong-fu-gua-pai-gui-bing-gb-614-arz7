@@ -5,9 +5,9 @@ import { barList, badge, emptyState, errorBox, errorMessage, esc, fmtTime, trend
 function heroTags(data) {
   return `<div class="hero-tags">
     <div class="price-tag">
-      <span class="k">挂牌原文</span>
-      <span class="v" data-testid="listing-total">${esc(data.listing_total)}</span>
-      <span class="hint">${esc(data.agency_total)} 家中介的原始挂牌条数</span>
+      <span class="k">当前有效挂牌</span>
+      <span class="v" data-testid="listing-total">${esc(data.listing_current ?? data.listing_total)}</span>
+      <span class="hint">历史累计 ${esc(data.listing_total)} 条 · 已失效留痕 ${esc(data.listing_invalid ?? 0)} 条（不参与归并）</span>
     </div>
     <div class="price-tag alt">
       <span class="k">归并后的房源</span>
@@ -17,7 +17,7 @@ function heroTags(data) {
     <div class="price-tag">
       <span class="k">去重率</span>
       <span class="v" data-testid="dedup-rate">${esc(pct(data.dedup_rate))}</span>
-      <span class="hint">1 − 簇数 / 挂牌数（算法 A 计算）</span>
+      <span class="hint">1 − 簇数 / 当前有效挂牌数（算法 A 计算）</span>
     </div>
     <div class="price-tag alt">
       <span class="k">风险簇 / 待复核</span>

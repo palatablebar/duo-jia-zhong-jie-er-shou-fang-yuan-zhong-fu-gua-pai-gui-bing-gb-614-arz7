@@ -46,6 +46,17 @@ export const ENUMS = {
   riskLevel: { high: '高风险', medium: '中风险', low: '低风险', none: '正常' },
   riskTag: { bait: '钓鱼价', stale: '僵尸挂牌', spread: '价格离散' },
   listingStatus: { active: '在售', sold: '已成交未下架', off_market: '已下架' },
+  invalidReason: {
+    withdrawn: '门店撤回（新批次未出现）',
+    off_market: '中介标记已下架',
+    sold: '中介标记已成交',
+    stale_batch: '晚到旧批次（未被当前批次确认）',
+  },
+  snapshotBatchStatus: {
+    applied: '已对账',
+    stale: '晚到旧批（仅归档）',
+    duplicate: '重试批次（幂等忽略）',
+  },
   agencyKind: { broker: '中介门店', platform: '信息平台', feed: '数据服务商' },
   runStatus: { queued: '排队中', running: '执行中', success: '成功', partial: '部分成功', failed: '失败' },
   reviewStatus: { pending: '待复核', confirmed: '已确认', dismissed: '已驳回' },
@@ -63,6 +74,11 @@ export function riskTone(level) {
 
 export function statusTone(status) {
   return { active: 'ok', sold: 'warn', off_market: '' }[status] ?? '';
+}
+
+/** 挂牌生命周期：当前有效 / 已失效（失效依据见 ENUMS.invalidReason）。 */
+export function lifecycleTone(isCurrent) {
+  return isCurrent ? 'ok' : 'danger';
 }
 
 export function reviewTone(status) {

@@ -31,8 +31,11 @@ def serialize(agency: Agency, listing_count: int = 0, last_listing_at=None) -> d
 
 
 def listing_stats(db: Session) -> dict[int, dict]:
+    """每家中介当前有效挂牌数与最近采集时间（失效历史不计入挂牌数）。"""
     rows = db.execute(
-        select(Listing.agency_id, func.count(Listing.id), func.max(Listing.captured_at)).group_by(Listing.agency_id)
+        select(Listing.agency_id, func.count(Listing.id), func.max(Listing.captured_at))
+        .where(Listing.is_current.is_(True))
+        .group_by(Listing.agency_id)
     ).all()
     return {agency_id: {"count": count, "last_at": last_at} for agency_id, count, last_at in rows}
 

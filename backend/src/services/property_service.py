@@ -49,7 +49,7 @@ def _agency_names_by_property(db: Session) -> dict[int, list[str]]:
     rows = db.execute(
         select(Listing.property_id, Agency.name)
         .join(Agency, Agency.id == Listing.agency_id)
-        .where(Listing.property_id.is_not(None))
+        .where(Listing.property_id.is_not(None), Listing.is_current.is_(True))
         .distinct()
     ).all()
     grouped: dict[int, list[str]] = {}
@@ -132,6 +132,7 @@ def agency_coverage(db: Session) -> list[dict]:
     rows = db.execute(
         select(Agency.id, Agency.name, func.count(Listing.id))
         .join(Listing, Listing.agency_id == Agency.id, isouter=True)
+        .where(or_(Listing.is_current.is_(True), Listing.id.is_(None)))
         .group_by(Agency.id, Agency.name)
         .order_by(Agency.id)
     ).all()

@@ -1,10 +1,16 @@
-"""幂等 seed：3 账号 / 9 中介 / 540 条挂牌 / 2 次归并重算 / 386 个房源簇 / 6 张复核单。
+"""幂等 seed：3 账号 / 9 中介 / 540 条挂牌 / 快照批次 / 2 次归并重算 / 386 个房源簇 / 6 张复核单。
 
 自然键 upsert：
-  users.email / agencies.code / listings(agency_id, lid) / match_runs.seed_key / reviews.seed_key / audit_logs.seed_key
+  users.email / agencies.code / snapshot_batches(agency_id, batch_key) /
+  listings(agency_id, lid) / match_runs.seed_key / reviews.seed_key / audit_logs.seed_key
 重复执行不新增、不覆盖用户改过的复核结论；SEED_SUMMARY 逐字一致。
+
+历史挂牌通过一次「基线整批快照」接入，补齐首次/最近出现批次等快照生命周期字段，
+保证只让当前有效挂牌（is_current=True）进入归并。
 """
 from __future__ import annotations
+
+from datetime import date
 
 from sqlalchemy import func, select
 
@@ -15,9 +21,11 @@ from src.models.listing import Listing
 from src.models.match_run import MatchRun
 from src.models.property import Property
 from src.models.review import Review
+from src.models.snapshot import ListingSnapshot, SnapshotBatch
 from src.models.user import User
 from src.services import match_run_service, review_service
 from src.utils.security import hash_password
+from src.utils.timeutil import utcnow
 
 from scripts.demo_config import (
     AGENCIES,
@@ -28,6 +36,9 @@ from scripts.demo_config import (
     SEED_RUNS,
     build_listings,
 )
+
+BASELINE_SNAPSHOT_DATE = date(2026, 11, 1)
+BASELINE_BATCH_KEY = "seed-baseline-20261101"
 
 
 def ensure_users(db) -> int:
@@ -105,6 +116,84 @@ def ensure_listings(db) -> int:
     return created
 
 
+def ensure_snapshots(db) -> int:
+    """为每家中介补一条基线整批快照（幂等），并回填挂牌的快照生命周期字段。
+
+    与真实接入同一套自然键：批次已存在则跳过，不新增任何记录。
+    """
+    agencies = {agency.code: agency for agency in db.scalars(select(Agency)).all()}
+    _, rows = build_listings()
+    rows_by_agency: dict[str, list[dict]] = {}
+    for row in rows:
+        rows_by_agency.setdefault(row["agency_code"], []).append(row)
+
+    now = utcnow()
+    batch_count = 0
+    for agency_code, agency_rows in rows_by_agency.items():
+        agency = agencies.get(agency_code)
+        if agency is None:
+            continue
+        exists = db.scalar(
+            select(SnapshotBatch).where(
+                SnapshotBatch.agency_id == agency.id,
+                SnapshotBatch.batch_key == BASELINE_BATCH_KEY,
+            )
+        )
+        if exists is not None:
+            continue
+        batch = SnapshotBatch(
+            agency_id=agency.id,
+            batch_key=BASELINE_BATCH_KEY,
+            snapshot_date=BASELINE_SNAPSHOT_DATE,
+            status="applied",
+            row_count=len(agency_rows),
+            applied_at=now,
+            summary={
+                "snapshots_received": len(agency_rows),
+                "created": len(agency_rows),
+                "reactivated": 0,
+                "kept": 0,
+                "withdrawn": 0,
+                "deactivated": 0,
+                "stale_ignored": 0,
+            },
+        )
+        db.add(batch)
+        db.flush()
+        lid_to_listing = {
+            listing.lid: listing
+            for listing in db.scalars(select(Listing).where(Listing.agency_id == agency.id)).all()
+        }
+        for row in agency_rows:
+            db.add(
+                ListingSnapshot(
+                    batch_id=batch.id,
+                    agency_id=agency.id,
+                    lid=row["lid"],
+                    community_raw=row["community_raw"],
+                    layout_raw=row["layout_raw"],
+                    area_raw=row["area_raw"],
+                    price_raw=row["price_raw"],
+                    floor_raw=row["floor_raw"],
+                    orientation_raw=row["orientation_raw"],
+                    title=row["title"],
+                    status=row["status"],
+                    listed_days=row["listed_days"],
+                    views=row["views"],
+                    captured_at=now,
+                    raw_payload={key: row[key] for key in row},
+                )
+            )
+            listing = lid_to_listing.get(row["lid"])
+            if listing is not None and listing.first_seen_batch_id is None:
+                listing.first_seen_batch_id = batch.id
+                listing.last_seen_batch_id = batch.id
+                listing.is_current = True
+        batch_count += 1
+    db.flush()
+    return batch_count
+
+
 def ensure_runs(db) -> int:
     for seed_key, trigger, operator, threshold in SEED_RUNS:
         match_run_service.create_and_execute(
@@ -167,6 +256,7 @@ def seed_all() -> dict:
         users = ensure_users(db)
         agencies = ensure_agencies(db)
         ensure_listings(db)
+        ensure_snapshots(db)
         runs = ensure_runs(db)
         ensure_reviews(db)
         ensure_audit(db)
